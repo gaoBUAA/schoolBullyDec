@@ -3,39 +3,52 @@
     <h2>📹 上传视频进行检测</h2>
 
     <div class="upload-preview">
-      <!-- 上传部分 -->
       <div class="upload-box">
         <input type="file" @change="handleVideoUpload" accept="video/mp4" class="file-input">
         <label for="fileInput" class="upload-btn">选择视频</label>
       </div>
 
-      <!-- 预览部分 -->
       <div v-if="videoPreviewUrl" class="video-preview">
-        <h3>🎬 预览</h3>
         <video ref="videoPlayer" :src="videoPreviewUrl" controls autoplay @error="handleVideoError"></video>
       </div>
     </div>
 
-    <!-- 上传状态 -->
-    <div v-if="uploadStatus" class="status-box">
-      <p>{{ uploadStatus }}</p>
-      <div v-if="uploadProgress > 0" class="progress-bar">
-        <div class="progress" :style="{ width: uploadProgress + '%' }"></div>
+    <!-- 结果显示模块 -->
+    <div class="detection-info" v-if="detectionResults.length || uploadStatus !== '⏳ 视频上传中...'">
+      <h3>📊 检测结果</h3>
+      <div class="info-box">
+        <div class="info-item">
+          <span>检测结果:</span>
+          <span>{{ uploadStatus || '等待推理...' }}</span>
+        </div>
+        <div class="info-item">
+          <span>概率分布:</span>
+          <span v-if="detectionResults.length"> {{ detectionResults[0].probability }}%</span>
+          <span v-else>N/A</span>
+        </div>
+        <div class="info-item">
+          <span>FPS:</span>
+          <span>{{ fps }} frames/s</span>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, watchEffect } from 'vue';
+import { ref, watchEffect, onMounted } from 'vue';
+import axios from 'axios';
 
-// 上传状态
 const uploadStatus = ref('');
 const uploadProgress = ref(0);
 const videoPreviewUrl = ref('');
 const videoPlayer = ref(null);
+const detectionResults = ref([]);
+const fps = ref(0);  // FPS统计
 
-// 处理视频上传
+let lastFrameTime = 0;
+let frameCount = 0;
+
 const handleVideoUpload = (event) => {
   const file = event.target.files[0];
   if (!file) return;
@@ -44,53 +57,76 @@ const handleVideoUpload = (event) => {
   uploadStatus.value = '⏳ 视频上传中...';
   uploadProgress.value = 0;
 
-  // 确保释放旧 Blob URL
   setTimeout(() => {
     if (videoPreviewUrl.value) {
       console.log("🗑 释放旧 Blob URL:", videoPreviewUrl.value);
       URL.revokeObjectURL(videoPreviewUrl.value);
     }
-  }, 10000); // 10s 后释放，避免影响播放
+  }, 10000);
 
   videoPreviewUrl.value = URL.createObjectURL(file);
   console.log("✅ 生成的视频预览 URL:", videoPreviewUrl.value);
 
-  mockUploadVideo(file);
+  processVideoFrames(file);
 };
 
-// 监听 video URL 变化，手动触发加载
 watchEffect(() => {
   if (videoPlayer.value && videoPreviewUrl.value) {
     console.log("🎥 重新设置 video.src:", videoPreviewUrl.value);
     videoPlayer.value.src = videoPreviewUrl.value;
-    videoPlayer.value.load(); // 手动触发加载
+    videoPlayer.value.load();
   }
 });
 
-// 处理视频加载失败
 const handleVideoError = () => {
   console.error("❌ 视频加载失败:", videoPreviewUrl.value);
   alert("视频加载失败，请检查文件格式或尝试更换浏览器！");
 };
 
-// 模拟视频上传
-const mockUploadVideo = (file) => {
-  const formData = new FormData();
-  formData.append('video', file);
+const processVideoFrames = (file) => {
+  const videoElement = document.createElement('video');
+  videoElement.src = URL.createObjectURL(file);
+  videoElement.crossOrigin = 'anonymous';
+  videoElement.autoplay = false;
+  videoElement.muted = true;
 
-  let progress = 0;
-  const interval = setInterval(() => {
-    progress += 10;
-    uploadProgress.value = progress;
-    if (progress >= 100) {
-      clearInterval(interval);
-      uploadStatus.value = '✅ 视频上传成功！正在分析...';
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  detectionResults.value = [];
 
-      setTimeout(() => {
-        uploadStatus.value = '📊 分析完成，结果已生成！';
-      }, 2000);
+  videoElement.addEventListener('loadeddata', async () => {
+    const frameRate = 5;
+    let currentTime = 0;
+    const startTime = performance.now();  // 计时开始
+
+    while (currentTime < videoElement.duration) {
+      videoElement.currentTime = currentTime;
+      await new Promise((resolve) => videoElement.onseeked = resolve);
+
+      canvas.width = videoElement.videoWidth;
+      canvas.height = videoElement.videoHeight;
+      context.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      const frameData = canvas.toDataURL('image/jpeg').replace(/^data:image\/jpeg;base64,/, '');
+
+      try {
+        const response = await axios.post('http://localhost:5000/predict', { frame: frameData });
+        detectionResults.value.push({
+          label: response.data.label,
+          probability: (response.data.probs[0] * 100).toFixed(2)
+        });
+      } catch (error) {
+        console.error('帧推理失败:', error);
+      }
+      
+      frameCount++;
+      const currentTimeNow = performance.now();
+      const elapsedTime = (currentTimeNow - startTime) / 1000;  // 转为秒
+      fps.value = (frameCount / elapsedTime).toFixed(2);  // 更新FPS
+
+      currentTime += 1 / frameRate;
     }
-  }, 300);
+    uploadStatus.value = '📊 逐帧检测完成，结果已生成！';
+  });
 };
 </script>
 
@@ -103,6 +139,10 @@ const mockUploadVideo = (file) => {
   border-radius: 15px;
   background: rgba(10, 25, 47, 0.8);
   box-shadow: 0 0 15px rgba(0, 255, 255, 0.7);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 h2 {
@@ -110,16 +150,30 @@ h2 {
   text-shadow: 0 0 5px #00ffff;
 }
 
-/* 上传和预览水平排列 */
 .upload-preview {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 20px;
-  margin-top: 15px;
+  max-width: 100%;
 }
 
-/* 上传按钮 */
+.video-preview {
+  display: flex;
+  justify-content:left; /* 水平居中 */
+  align-items: center;    /* 垂直居中 */
+  flex: 1;
+  max-width: 100%;
+  max-height: 100%;      /* 根据需要调整这个值 */
+}
+
+.video-preview video {
+  justify-content: left; /* 水平居中 */
+  max-width: 100%;
+  max-height: 400px;       /* 保证视频内容在最大高度内 */
+  object-fit: contain;
+}
+
 .upload-box {
   width: 40%;
   text-align: center;
@@ -130,7 +184,7 @@ h2 {
   opacity: 0;
   position: absolute;
   width: 100%;
-  height: 100%;
+  height: 80%;
   cursor: pointer;
 }
 
@@ -149,69 +203,34 @@ h2 {
   background: rgba(0, 255, 255, 0.2);
 }
 
-/* 预览窗口 */
-.video-preview {
-  width: 100%;
-  text-align: center;
-  height: 500px; /* 固定高度，调整根据需要 */
-  overflow: hidden; /* 防止视频溢出 */
-  position: relative;
-}
-
-.video-preview h3 {
-  color: #00ffff;
-}
-
-/* 保持视频的比例并适应容器 */
-video {
-  width: 100%;
-  height: 100%;
-  object-fit: contain; /* 使视频适应容器，不会被拉伸 */
+/* 新的检测信息模块 */
+.detection-info {
+  margin-top: 20px;
+  padding: 15px;
+  background-color: rgba(0, 0, 0, 0.7);
   border-radius: 10px;
-  border: 1px solid #00ffff;
-  box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+  box-shadow: 0 0 15px rgba(0, 255, 255, 0.7);
 }
 
-
-/* 上传状态 */
-.status-box {
-  margin-top: 15px;
+.detection-info h3 {
   color: #00ffff;
+  margin-bottom: 10px;
 }
 
-.progress-bar {
-  width: 100%;
-  height: 10px;
-  background: rgba(0, 255, 255, 0.2);
-  border-radius: 5px;
-  overflow: hidden;
-  margin-top: 5px;
+.info-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.progress {
-  height: 100%;
-  background: #00ffff;
-  transition: width 0.3s ease-in-out;
+.info-item {
+  display: flex;
+  justify-content: space-between;
+  color: #ffffff;
+  font-size: 14px;
 }
 
-/* 响应式：当屏幕较小时改为垂直布局 */
-@media (max-width: 768px) {
-  .upload-preview {
-    flex-direction: column;
-    gap: 15px;
-  }
-
-  .upload-box,
-  .video-preview {
-    width: 100%;
-  }
-
-  .upload-btn {
-    width: 80%;
-  }
-
-  video {
-    width: 100%;
-  }
+.info-item span:first-child {
+  font-weight: bold;
 }
 </style>

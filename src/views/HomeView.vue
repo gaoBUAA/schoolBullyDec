@@ -8,9 +8,6 @@
         <div class="section monitor-section">
           <LiveMonitor />
         </div>
-        <div class="section chart-section">
-          <ViolenceChart />
-        </div>
       </div>
 
       <!-- 右侧部分：数据可视化分析 -->
@@ -27,7 +24,6 @@
 import { ref } from 'vue';
 import VideoUpload from '@/components/VideoUpload.vue';
 import LiveMonitor from '@/components/LiveMonitor.vue';
-import ViolenceChart from '@/components/ViolenceChart.vue';
 
 const handleVideoUploaded = () => {
   console.log('视频上传成功！');
